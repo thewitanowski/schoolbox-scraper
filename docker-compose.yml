@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: schoolbox_scraper
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      target: production
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/schoolbox_scraper
+      SCRAPER_API_KEY: dev-api-key
+      SCHOOLBOX_URL: ${SCHOOLBOX_URL}
+      SCHOOLBOX_USERNAME: ${SCHOOLBOX_USERNAME}
+      SCHOOLBOX_PASSWORD: ${SCHOOLBOX_PASSWORD}
+      SCHOOLBOX_STUDENT_ID: ${SCHOOLBOX_STUDENT_ID:-8087}
+      SCHOOLBOX_PARENT_ID: ${SCHOOLBOX_PARENT_ID:-8166}
+      DATA_DIR: /data
+    volumes:
+      - scraper-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  scraper-data:
