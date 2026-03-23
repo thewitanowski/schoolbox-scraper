@@ -3,8 +3,13 @@ import { config } from '../config.js'
 import { DueWorkItem, AttachmentInfo } from './types.js'
 
 export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolboxUrl' | 'title' | 'attachments'> {
+  // Try multiple patterns for subject extraction
   const subjectMatch = bodyText.match(/([\w\s&-]+)\s*-\s*\d+\/\w+\s*\((\w+\s*\w*)\)\s*(?:Assessment|Homework|Quiz|Class Work)/i)
+    || bodyText.match(/([\w\s&-]+)\s*-\s*\d+\/\w+\s*\((\w+\s*\w*)\)/i)
+    || bodyText.match(/(?:Subject|Class):\s*([\w\s&-]+)\s*(?:\((\w+\s*\w*)\))?/i)
     || bodyText.match(/YEAR \d+\s+(.+?)\s+\d{4}\s/i)
+    // Match breadcrumb-style: "Mathematics - 7/C" or "Science - 7/C"
+    || bodyText.match(/((?:Mathematics|English|Science|PDHPE|Geography|History|Music|Technology|Visual Arts|FUSION|Biblical Studies|LOTE[- ]Japanese|Pastoral Care))\s*(?:-\s*\d+\/\w+)?(?:\s*\((\w+\s*\w*)\))?/i)
 
   const teacherMatch = bodyText.match(/TEACHER:\s*(.+?)(?:\n|DUE|WEIGHTING)/i)
   const dueDateMatch = bodyText.match(/DUE DATE\s*[\s]*([\w\s,]+\d{4})/i)
