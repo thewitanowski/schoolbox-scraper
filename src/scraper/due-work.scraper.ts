@@ -253,46 +253,44 @@ export async function scrapeDueWork(page: Page): Promise<DueWorkItem[]> {
         }
       }
 
-          // Also check for additional attachments on the detail page
-          const detailAttachLinks = await page.locator('a[href*="download"], a[href*="/file/"], a[href*="/storage/fetch"]').all()
-          for (const dl of detailAttachLinks) {
-            const dlHref = await dl.getAttribute('href') || ''
-            const dlText = (await dl.textContent())?.trim() || ''
-            if (dlText.length > 2 && dlHref && !attachments.some(a => a.url.includes(dlHref))) {
-              const fullUrl = dlHref.startsWith('http') ? dlHref : `${baseUrl}${dlHref}`
-              let filePath: string | null = null
+      // Also check for additional attachments on the detail page
+      const detailAttachLinks = await page.locator('a[href*="download"], a[href*="/file/"], a[href*="/storage/fetch"]').all()
+      for (const dl of detailAttachLinks) {
+        const dlHref = await dl.getAttribute('href') || ''
+        const dlText = (await dl.textContent())?.trim() || ''
+        if (dlText.length > 2 && dlHref && !attachments.some(a => a.url.includes(dlHref))) {
+          const fullUrl = dlHref.startsWith('http') ? dlHref : `${baseUrl}${dlHref}`
+          let filePath: string | null = null
 
-              try {
-                if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
-                const safeName = dlText.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
-                filePath = join(attachmentsDir, safeName)
-                const response = await page.context().request.get(fullUrl)
-                if (response.ok()) {
-                  const buffer = await response.body()
-                  const ws = createWriteStream(filePath)
-                  ws.write(buffer)
-                  ws.end()
-                  console.log(`    Detail attachment: downloaded "${dlText}"`)
-                } else {
-                  filePath = null
-                }
-              } catch {
-                filePath = null
-              }
-
-              attachments.push({
-                name: dlText.replace(/\s+/g, ' '),
-                size: '',
-                url: fullUrl,
-                filePath
-              })
+          try {
+            if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
+            const safeName = dlText.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
+            filePath = join(attachmentsDir, safeName)
+            const response = await page.context().request.get(fullUrl)
+            if (response.ok()) {
+              const buffer = await response.body()
+              const ws = createWriteStream(filePath)
+              ws.write(buffer)
+              ws.end()
+              console.log(`    Detail attachment: downloaded "${dlText}"`)
+            } else {
+              filePath = null
             }
+          } catch {
+            filePath = null
           }
+
+          attachments.push({
+            name: dlText.replace(/\s+/g, ' '),
+            size: '',
+            url: fullUrl,
+            filePath
+          })
         }
       }
     } catch (err) {
       // Detail page extraction is best-effort
-      console.warn(`    View More Details: failed for "${title}"`)
+      console.warn(`    Detail page: failed for "${title}":`, err)
     }
 
     // Merge extended description if richer
