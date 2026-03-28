@@ -4,6 +4,24 @@ import { join } from 'path'
 import { config } from '../config.js'
 import { DueWorkItem, AttachmentInfo } from './types.js'
 
+/** Clean extracted text — remove JavaScript, HTML artifacts, and page noise */
+function cleanExtracted(text: string, maxLen: number): string {
+  return text
+    .replace(/\$\(function\(\)[\s\S]*/gi, '') // jQuery
+    .replace(/\$\(document[\s\S]*/gi, '')
+    .replace(/\$\(['"][^'"]*['"]\)[\s\S]*/g, '') // jQuery selectors
+    .replace(/function\s*\([\s\S]*/g, '') // JS functions
+    .replace(/Activate export[\s\S]*/gi, '')
+    .replace(/SUBMISSION DETAILS[\s\S]*/gi, '')
+    .replace(/SUBMISSION HISTORY[\s\S]*/gi, '')
+    .replace(/RANGE OF MARKS[\s\S]*/gi, '')
+    .replace(/MARKING CRITERIA[\s\S]*/gi, '')
+    .replace(/OUTCOME\w+[-]\w+/g, '') // Loose outcome codes mixed into text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen)
+}
+
 export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolboxUrl' | 'title' | 'attachments'> {
   // Try multiple patterns for subject extraction
   const subjectMatch = bodyText.match(/([\w\s&-]+)\s*-\s*\d+\/\w+\s*\((\w+\s*\w*)\)\s*(?:Assessment|Homework|Quiz|Class Work)/i)
@@ -19,11 +37,14 @@ export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolb
   const statusMatch = bodyText.match(/(Not submitted|Submitted on time|Submitted late|Reviewed|Teacher-Assessed|Incomplete|Submitted in person)/i)
   const typeMatch = bodyText.match(/(Assessment Task \d+|Homework|Quiz|Class Work|Continuous Assessment|Project)/i)
 
-  const descMatch = bodyText.match(/TASK DESCRIPTION\s*([\s\S]*?)(?=USE OF ARTIFICIAL|WHAT I AM LOOKING|WHAT I NEED|KEY TERMINOLOGY|UPCOMING LEARNING|$)/i)
-  const criteriaMatch = bodyText.match(/WHAT I AM LOOKING FOR\s*([\s\S]*?)(?=WHAT I NEED|KEY TERMINOLOGY|USE OF ARTIFICIAL|UPCOMING LEARNING|$)/i)
-  const materialsMatch = bodyText.match(/WHAT I NEED\s*([\s\S]*?)(?=KEY TERMINOLOGY|USE OF ARTIFICIAL|WHAT I AM LOOKING|UPCOMING LEARNING|$)/i)
-  const termMatch = bodyText.match(/KEY TERMINOLOGY\s*([\s\S]*?)(?=WHAT I NEED|USE OF ARTIFICIAL|WHAT I AM LOOKING|UPCOMING LEARNING|$)/i)
-  const aiMatch = bodyText.match(/USE OF ARTIFICIAL INTELLIGENCE.*?\s*([\s\S]*?)(?=WHAT I AM LOOKING|WHAT I NEED|KEY TERMINOLOGY|UPCOMING LEARNING|$)/i)
+  // Content extraction — stop at section boundaries AND page chrome
+  const sectionEnd = '(?=USE OF ARTIFICIAL|WHAT I AM LOOKING|WHAT I NEED|KEY TERMINOLOGY|UPCOMING LEARNING|SUBMISSION DETAILS|SUBMISSION HISTORY|MARKING CRITERIA|RANGE OF MARKS|GRADING|Return|\\$\\(function|\\$\\(document|Activate export|<script)'
+
+  const descMatch = bodyText.match(new RegExp(`TASK DESCRIPTION\\s*([\\s\\S]*?)${sectionEnd}`, 'i'))
+  const criteriaMatch = bodyText.match(new RegExp(`WHAT I AM LOOKING FOR\\s*([\\s\\S]*?)${sectionEnd}`, 'i'))
+  const materialsMatch = bodyText.match(new RegExp(`WHAT I NEED\\s*([\\s\\S]*?)${sectionEnd}`, 'i'))
+  const termMatch = bodyText.match(new RegExp(`KEY TERMINOLOGY\\s*([\\s\\S]*?)${sectionEnd}`, 'i'))
+  const aiMatch = bodyText.match(new RegExp(`USE OF ARTIFICIAL INTELLIGENCE.*?\\s*([\\s\\S]*?)${sectionEnd}`, 'i'))
 
   let description = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : ''
 
@@ -65,10 +86,10 @@ export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolb
     weighting: weightMatch?.[1] || '',
     teacher: teacherMatch?.[1]?.trim() || '',
     description,
-    criteria: criteriaMatch ? criteriaMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : '',
-    materials: materialsMatch ? materialsMatch[1].trim().replace(/\s+/g, ' ').slice(0, 1000) : '',
-    terminology: termMatch ? termMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : '',
-    aiPolicy: aiMatch ? aiMatch[1].trim().replace(/\s+/g, ' ').slice(0, 500) : ''
+    criteria: criteriaMatch ? cleanExtracted(criteriaMatch[1], 2000) : '',
+    materials: materialsMatch ? cleanExtracted(materialsMatch[1], 1000) : '',
+    terminology: termMatch ? cleanExtracted(termMatch[1], 2000) : '',
+    aiPolicy: aiMatch ? cleanExtracted(aiMatch[1], 500) : ''
   }
 }
 
