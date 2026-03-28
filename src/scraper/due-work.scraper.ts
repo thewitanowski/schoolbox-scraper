@@ -1,4 +1,6 @@
 import { Page } from 'playwright'
+import { createWriteStream, existsSync, mkdirSync } from 'fs'
+import { join } from 'path'
 import { config } from '../config.js'
 import { DueWorkItem, AttachmentInfo } from './types.js'
 
@@ -23,6 +25,37 @@ export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolb
   const termMatch = bodyText.match(/KEY TERMINOLOGY\s*([\s\S]*?)(?=WHAT I NEED|USE OF ARTIFICIAL|WHAT I AM LOOKING|UPCOMING LEARNING|$)/i)
   const aiMatch = bodyText.match(/USE OF ARTIFICIAL INTELLIGENCE.*?\s*([\s\S]*?)(?=WHAT I AM LOOKING|WHAT I NEED|KEY TERMINOLOGY|UPCOMING LEARNING|$)/i)
 
+  let description = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : ''
+
+  // Fallback: if no structured sections found, try to extract any meaningful content
+  // from the body text (excluding metadata like dates, names, navigation)
+  if (!description && !criteriaMatch && !materialsMatch && !termMatch) {
+    // Look for content after the status/type/date metadata block
+    const contentMatch = bodyText.match(
+      /(?:Not submitted|Submitted|Reviewed|Teacher-Assessed|Incomplete)\s*([\s\S]*?)(?=Return|RETURN|Submission History|$)/i
+    )
+    if (contentMatch) {
+      const rawContent = contentMatch[1].trim().replace(/\s+/g, ' ')
+      // Filter out short/noisy content
+      if (rawContent.length > 20) {
+        description = rawContent.slice(0, 3000)
+      }
+    }
+
+    // Alternative: grab content between the title and any footer/nav
+    if (!description) {
+      const altMatch = bodyText.match(
+        /(?:Homework|Assessment Task|Quiz|Class Work|Project|Continuous Assessment)\s*([\s\S]*?)(?=Return|RETURN|Submission History|Upload|Submit|$)/i
+      )
+      if (altMatch) {
+        const rawContent = altMatch[1].trim().replace(/\s+/g, ' ')
+        if (rawContent.length > 20) {
+          description = rawContent.slice(0, 3000)
+        }
+      }
+    }
+  }
+
   return {
     subject: subjectMatch?.[1]?.trim() || '',
     subjectCode: subjectMatch?.[2]?.trim() || '',
@@ -31,7 +64,7 @@ export function parseDueWorkFields(bodyText: string): Omit<DueWorkItem, 'schoolb
     status: statusMatch?.[1] || '',
     weighting: weightMatch?.[1] || '',
     teacher: teacherMatch?.[1]?.trim() || '',
-    description: descMatch ? descMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : '',
+    description,
     criteria: criteriaMatch ? criteriaMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : '',
     materials: materialsMatch ? materialsMatch[1].trim().replace(/\s+/g, ' ').slice(0, 1000) : '',
     terminology: termMatch ? termMatch[1].trim().replace(/\s+/g, ' ').slice(0, 2000) : '',
@@ -75,26 +108,148 @@ export async function scrapeDueWork(page: Page): Promise<DueWorkItem[]> {
     const bodyText = await page.locator('body').textContent() || ''
     const fields = parseDueWorkFields(bodyText)
 
-    // Extract attachments from the modal
+    // Extract and download attachments from the modal
     const attachments: AttachmentInfo[] = []
-    const downloadLinks = await page.locator('a[href*="download"], a[href*="/file/"]').all()
+    const attachmentsDir = join(config.dataDir, 'attachments', String(i))
+    const downloadLinks = await page.locator('a[href*="download"], a[href*="/file/"], a[href*="/storage/fetch"]').all()
     for (const dl of downloadLinks) {
       const dlHref = await dl.getAttribute('href') || ''
       const dlText = (await dl.textContent())?.trim() || ''
       if (dlText.length > 2 && dlHref) {
+        const fullUrl = dlHref.startsWith('http') ? dlHref : `${baseUrl}${dlHref}`
+        let filePath: string | null = null
+
+        // Download the attachment file
+        try {
+          if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
+          const safeName = dlText.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
+          filePath = join(attachmentsDir, safeName)
+
+          const response = await page.context().request.get(fullUrl)
+          if (response.ok()) {
+            const buffer = await response.body()
+            const ws = createWriteStream(filePath)
+            ws.write(buffer)
+            ws.end()
+            console.log(`    Attachment: downloaded "${dlText}"`)
+          } else {
+            filePath = null
+          }
+        } catch (err) {
+          console.warn(`    Attachment: failed to download "${dlText}":`, err)
+          filePath = null
+        }
+
         attachments.push({
           name: dlText.replace(/\s+/g, ' '),
           size: '',
-          url: dlHref.startsWith('http') ? dlHref : `${baseUrl}${dlHref}`
+          url: fullUrl,
+          filePath
         })
       }
+    }
+
+    // Check for "View More Details" link to get extended content
+    let extendedDescription = ''
+    try {
+      const viewMoreLink = page.locator('a:has-text("VIEW MORE DETAILS"), a:has-text("View More Details"), a:has-text("view more details")')
+      if (await viewMoreLink.count() > 0) {
+        const detailHref = await viewMoreLink.first().getAttribute('href')
+        if (detailHref) {
+          const detailUrl = detailHref.startsWith('http') ? detailHref : `${baseUrl}${detailHref}`
+          // Close modal first
+          await page.keyboard.press('Escape')
+          await page.waitForTimeout(300)
+
+          // Navigate to detail page
+          await page.goto(detailUrl, { waitUntil: 'networkidle', timeout: 15000 })
+          await page.waitForTimeout(1500)
+
+          // Extract the full page content — try specific selectors first, fall back to body
+          let detailBody = ''
+          for (const selector of ['.assessment-content', '.content-area', '.component-content', 'main', '#content']) {
+            const el = page.locator(selector).first()
+            if (await el.count() > 0) {
+              detailBody = await el.textContent() || ''
+              if (detailBody.length > 50) break
+            }
+          }
+          if (!detailBody || detailBody.length < 50) {
+            detailBody = await page.locator('body').textContent() || ''
+          }
+
+          // Also try re-parsing the detail page for structured fields
+          const detailFields = parseDueWorkFields(detailBody)
+          if (detailFields.description && detailFields.description.length > fields.description.length) {
+            fields.description = detailFields.description
+          }
+          if (detailFields.criteria && detailFields.criteria.length > fields.criteria.length) {
+            fields.criteria = detailFields.criteria
+          }
+          if (detailFields.terminology && detailFields.terminology.length > fields.terminology.length) {
+            fields.terminology = detailFields.terminology
+          }
+          if (detailFields.materials && detailFields.materials.length > fields.materials.length) {
+            fields.materials = detailFields.materials
+          }
+
+          // If still no description, use the detail page body text
+          if (detailBody.length > fields.description.length + 50) {
+            extendedDescription = detailBody.trim().replace(/\s+/g, ' ').slice(0, 5000)
+          }
+
+          // Also check for additional attachments on the detail page
+          const detailAttachLinks = await page.locator('a[href*="download"], a[href*="/file/"], a[href*="/storage/fetch"]').all()
+          for (const dl of detailAttachLinks) {
+            const dlHref = await dl.getAttribute('href') || ''
+            const dlText = (await dl.textContent())?.trim() || ''
+            if (dlText.length > 2 && dlHref && !attachments.some(a => a.url.includes(dlHref))) {
+              const fullUrl = dlHref.startsWith('http') ? dlHref : `${baseUrl}${dlHref}`
+              let filePath: string | null = null
+
+              try {
+                if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true })
+                const safeName = dlText.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)
+                filePath = join(attachmentsDir, safeName)
+                const response = await page.context().request.get(fullUrl)
+                if (response.ok()) {
+                  const buffer = await response.body()
+                  const ws = createWriteStream(filePath)
+                  ws.write(buffer)
+                  ws.end()
+                  console.log(`    Detail attachment: downloaded "${dlText}"`)
+                } else {
+                  filePath = null
+                }
+              } catch {
+                filePath = null
+              }
+
+              attachments.push({
+                name: dlText.replace(/\s+/g, ' '),
+                size: '',
+                url: fullUrl,
+                filePath
+              })
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Detail page extraction is best-effort
+      console.warn(`    View More Details: failed for "${title}"`)
+    }
+
+    // Merge extended description if richer
+    if (extendedDescription && extendedDescription.length > fields.description.length) {
+      fields.description = extendedDescription
     }
 
     items.push({ schoolboxUrl, title, ...fields, attachments })
 
     console.log(`  [${i + 1}/${totalCount}] ${title}`)
 
-    // Close modal
+    // Close modal (if still open)
     await page.keyboard.press('Escape')
     await page.waitForTimeout(500)
   }

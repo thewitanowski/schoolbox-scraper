@@ -65,7 +65,8 @@ export function registerSyncRoutes(app: FastifyInstance, pool: pg.Pool): void {
                         dw.criteria, dw.materials, dw.terminology, dw.ai_policy, dw.teacher,
                         dw.updated_at,
                         COALESCE(json_agg(json_build_object(
-                          'id', a.id, 'name', a.name, 'size', a.size, 'url', a.url
+                          'id', a.id, 'name', a.name, 'size', a.size, 'url', a.url,
+                          'file_path', a.file_path
                         )) FILTER (WHERE a.id IS NOT NULL), '[]') as attachments
                  FROM schoolbox_due_work dw
                  LEFT JOIN schoolbox_attachments a ON a.due_work_id = dw.id`

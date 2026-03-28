@@ -30,6 +30,7 @@ export interface AttachmentInfo {
   name: string
   size: string
   url: string
+  filePath?: string | null
 }
 
 export interface GradeEntry {
@@ -59,6 +60,13 @@ export interface ScheduleInfo {
   subjectName: string
   pdfUrl: string
   filePath: string | null
+}
+
+export interface SubjectDetail {
+  subjectName: string
+  learningObjectives: string[]
+  assessmentOutline: string
+  curriculumOutcomes: string[]
 }
 
 export interface ScrapeResult {

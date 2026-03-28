@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { TimetablePeriod, DueWorkItem, GradeEntry, FeedItem, ScheduleInfo } from './types.js'
+import { TimetablePeriod, DueWorkItem, GradeEntry, FeedItem, ScheduleInfo, SubjectDetail } from './types.js'
 
 export class ScrapeRepository {
   constructor(private pool: pg.Pool) {}
@@ -89,13 +89,13 @@ export class ScrapeRepository {
 
       const dueWorkId = rows[0].id
 
-      // Save attachments
+      // Save attachments (with file path if downloaded)
       for (const att of item.attachments) {
         await this.pool.query(
-          `INSERT INTO schoolbox_attachments (due_work_id, name, size, url)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (url) DO UPDATE SET due_work_id = $1, name = $2, size = $3`,
-          [dueWorkId, att.name, att.size, att.url]
+          `INSERT INTO schoolbox_attachments (due_work_id, name, size, url, file_path, downloaded_at)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (url) DO UPDATE SET due_work_id = $1, name = $2, size = $3, file_path = COALESCE($5, schoolbox_attachments.file_path), downloaded_at = COALESCE($6, schoolbox_attachments.downloaded_at)`,
+          [dueWorkId, att.name, att.size, att.url, att.filePath || null, att.filePath ? new Date().toISOString() : null]
         )
       }
     }
@@ -125,6 +125,35 @@ export class ScrapeRepository {
          ON CONFLICT (title, feed_date, subject) DO NOTHING`,
         [runId, item.feedDate, item.title, item.teacher, item.subject,
          item.time, item.grade, item.feedback, item.detailUrl]
+      )
+    }
+  }
+
+  async saveSubjectDetail(detail: SubjectDetail): Promise<void> {
+    // Store as JSON metadata on the subjects table
+    // First try to find the matching subject
+    const { rows } = await this.pool.query(
+      `SELECT schoolbox_code FROM schoolbox_subjects WHERE LOWER(name) LIKE $1 LIMIT 1`,
+      [`%${detail.subjectName.toLowerCase()}%`]
+    )
+
+    if (rows.length > 0) {
+      const metadataJson = JSON.stringify({
+        learningObjectives: detail.learningObjectives,
+        assessmentOutline: detail.assessmentOutline,
+        curriculumOutcomes: detail.curriculumOutcomes
+      })
+
+      // Add a metadata column if it doesn't exist (idempotent ALTER)
+      try {
+        await this.pool.query(`ALTER TABLE schoolbox_subjects ADD COLUMN IF NOT EXISTS metadata JSONB`)
+      } catch {
+        // Column might already exist
+      }
+
+      await this.pool.query(
+        `UPDATE schoolbox_subjects SET metadata = $1 WHERE schoolbox_code = $2`,
+        [metadataJson, rows[0].schoolbox_code]
       )
     }
   }

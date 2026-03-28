@@ -6,6 +6,7 @@ import { scrapeDueWork } from './due-work.scraper.js'
 import { scrapeFeed } from './feed.scraper.js'
 import { scrapeGrades } from './grades.scraper.js'
 import { scrapeSchedules } from './schedules.scraper.js'
+import { scrapeSubjectDetails } from './subject-detail.scraper.js'
 import { ScrapeRepository } from './repositories.js'
 import { ScrapeModuleError } from './errors.js'
 
@@ -96,6 +97,19 @@ export class ScrapeOrchestrator {
         counts.schedules = schedules.length
       } catch (err) {
         const msg = `Schedules: ${err instanceof Error ? err.message : String(err)}`
+        errors.push(msg)
+        console.error(msg)
+      }
+
+      // Subject Details (learning objectives, curriculum outcomes)
+      try {
+        const details = await scrapeSubjectDetails(page)
+        // Store subject details as metadata on existing subjects
+        for (const detail of details) {
+          await this.repo.saveSubjectDetail(detail)
+        }
+      } catch (err) {
+        const msg = `Subject details: ${err instanceof Error ? err.message : String(err)}`
         errors.push(msg)
         console.error(msg)
       }
