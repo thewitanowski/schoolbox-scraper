@@ -122,12 +122,52 @@ export async function scrapeDueWork(page: Page): Promise<DueWorkItem[]> {
 
     if (!title || title.length < 3) continue
 
-    // Click to open modal
+    // Click to open modal/navigate to detail page
     await link.click()
     await page.waitForTimeout(2000)
 
-    const bodyText = await page.locator('body').textContent() || ''
-    const fields = parseDueWorkFields(bodyText)
+    // Try to read from specific content areas first, not the full body
+    let contentText = ''
+    for (const selector of [
+      '.modal-body', '.modal-content', '.assessment-detail',
+      '.component-content', '[class*="modal"]', '[role="dialog"]',
+      '.content-area', '#content', 'main'
+    ]) {
+      const el = page.locator(selector).first()
+      if (await el.count() > 0) {
+        const text = await el.textContent()
+        if (text && text.length > 50) {
+          contentText = text
+          break
+        }
+      }
+    }
+
+    // If we're on a full detail page (not a modal), get the main content
+    if (!contentText || contentText.length < 50) {
+      // Check if we navigated to a detail page (URL changed)
+      const currentUrl = page.url()
+      if (currentUrl.includes('/learning/assessments/')) {
+        // We're on the detail page — get the content block, not the whole body
+        const mainContent = page.locator('.assessment-content, .content-wrapper, [class*="assessment"], main .component-content').first()
+        if (await mainContent.count() > 0) {
+          contentText = await mainContent.textContent() || ''
+        }
+      }
+    }
+
+    // Last resort: get body text but try to exclude nav/sidebar
+    if (!contentText || contentText.length < 50) {
+      // Try body minus obvious nav elements
+      contentText = await page.evaluate(() => {
+        const body = document.body.cloneNode(true) as HTMLElement
+        // Remove nav, sidebar, footer elements
+        body.querySelectorAll('nav, .sidebar, .nav, #sidebar, footer, .footer, [class*="menu"], [class*="navigation"]').forEach(el => el.remove())
+        return body.textContent || ''
+      })
+    }
+
+    const fields = parseDueWorkFields(contentText)
 
     // Extract and download attachments from the modal
     const attachments: AttachmentInfo[] = []
@@ -170,54 +210,48 @@ export async function scrapeDueWork(page: Page): Promise<DueWorkItem[]> {
       }
     }
 
-    // Check for "View More Details" link to get extended content
+    // Navigate directly to the assessment detail page for full content
     let extendedDescription = ''
     try {
-      const viewMoreLink = page.locator('a:has-text("VIEW MORE DETAILS"), a:has-text("View More Details"), a:has-text("view more details")')
-      if (await viewMoreLink.count() > 0) {
-        const detailHref = await viewMoreLink.first().getAttribute('href')
-        if (detailHref) {
-          const detailUrl = detailHref.startsWith('http') ? detailHref : `${baseUrl}${detailHref}`
-          // Close modal first
-          await page.keyboard.press('Escape')
-          await page.waitForTimeout(300)
+      // Close any modal first
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(300)
 
-          // Navigate to detail page
-          await page.goto(detailUrl, { waitUntil: 'networkidle', timeout: 15000 })
-          await page.waitForTimeout(1500)
+      // Navigate to the full detail page using the assessment URL
+      await page.goto(schoolboxUrl, { waitUntil: 'networkidle', timeout: 15000 })
+      await page.waitForTimeout(1500)
 
-          // Extract the full page content — try specific selectors first, fall back to body
-          let detailBody = ''
-          for (const selector of ['.assessment-content', '.content-area', '.component-content', 'main', '#content']) {
-            const el = page.locator(selector).first()
-            if (await el.count() > 0) {
-              detailBody = await el.textContent() || ''
-              if (detailBody.length > 50) break
-            }
-          }
-          if (!detailBody || detailBody.length < 50) {
-            detailBody = await page.locator('body').textContent() || ''
-          }
+      // Extract content from the detail page, excluding nav/sidebar
+      const detailBody = await page.evaluate(() => {
+        const body = document.body.cloneNode(true) as HTMLElement
+        body.querySelectorAll('nav, .sidebar, .nav, #sidebar, footer, .footer, [class*="menu"], [class*="navigation"], header, .header').forEach(el => el.remove())
+        return body.textContent || ''
+      })
 
-          // Also try re-parsing the detail page for structured fields
-          const detailFields = parseDueWorkFields(detailBody)
-          if (detailFields.description && detailFields.description.length > fields.description.length) {
-            fields.description = detailFields.description
-          }
-          if (detailFields.criteria && detailFields.criteria.length > fields.criteria.length) {
-            fields.criteria = detailFields.criteria
-          }
-          if (detailFields.terminology && detailFields.terminology.length > fields.terminology.length) {
-            fields.terminology = detailFields.terminology
-          }
-          if (detailFields.materials && detailFields.materials.length > fields.materials.length) {
-            fields.materials = detailFields.materials
-          }
+      if (detailBody.length > 50) {
+        // Re-parse with the clean detail page content
+        const detailFields = parseDueWorkFields(detailBody)
+        if (detailFields.description && detailFields.description.length > fields.description.length) {
+          fields.description = detailFields.description
+        }
+        if (detailFields.criteria && detailFields.criteria.length > fields.criteria.length) {
+          fields.criteria = detailFields.criteria
+        }
+        if (detailFields.terminology && detailFields.terminology.length > fields.terminology.length) {
+          fields.terminology = detailFields.terminology
+        }
+        if (detailFields.materials && detailFields.materials.length > fields.materials.length) {
+          fields.materials = detailFields.materials
+        }
+        if (detailFields.aiPolicy && detailFields.aiPolicy.length > fields.aiPolicy.length) {
+          fields.aiPolicy = detailFields.aiPolicy
+        }
 
-          // If still no description, use the detail page body text
-          if (detailBody.length > fields.description.length + 50) {
-            extendedDescription = detailBody.trim().replace(/\s+/g, ' ').slice(0, 5000)
-          }
+        // If still no description from structured extraction, get the main content block
+        if (!fields.description || fields.description.length < 30) {
+          extendedDescription = detailBody.trim().replace(/\s+/g, ' ').slice(0, 5000)
+        }
+      }
 
           // Also check for additional attachments on the detail page
           const detailAttachLinks = await page.locator('a[href*="download"], a[href*="/file/"], a[href*="/storage/fetch"]').all()
